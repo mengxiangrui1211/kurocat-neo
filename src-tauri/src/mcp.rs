@@ -155,7 +155,12 @@ fn tool_definitions() -> Value {
                     "soundEnabled": { "type": "boolean" },
                     "alwaysOnTop": { "type": "boolean" },
                     "clickThroughLocked": { "type": "boolean" },
-                    "autostart": { "type": "boolean" }
+                    "autostart": { "type": "boolean" },
+                    "idleHideEnabled": {
+                        "type": "boolean",
+                        "description": "Act-on-demand mode: auto-hide the pet when there is no keyboard/mouse input for idleHideTimeoutSecs"
+                    },
+                    "idleHideTimeoutSecs": { "type": "integer", "minimum": 1, "maximum": 60 }
                 }
             }
         }
@@ -301,6 +306,12 @@ fn execute_tool(name: &str, args: &Value, on_change: &dyn Fn()) -> Value {
                 if set_windows_autostart(b).is_ok() {
                     s.autostart = b;
                 }
+            }
+            if let Some(b) = args.get("idleHideEnabled").and_then(|v| v.as_bool()) {
+                s.idle_hide_enabled = b;
+            }
+            if let Some(t) = args.get("idleHideTimeoutSecs").and_then(|v| v.as_u64()) {
+                s.idle_hide_timeout_secs = (t as u32).clamp(1, 60);
             }
             save_settings(&s);
             on_change();

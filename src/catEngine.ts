@@ -254,6 +254,11 @@ export class KuroCatEngine {
   private mouseRightPress = 0;
   private mouseMiddlePress = 0;
   private mouseScrollFlash = 0;
+  // 滚轮行走 (scroll-walk): the cat steps along with wheel scrolling
+  private scrollWalkEnergy = 0;   // 0..1 overall motion intensity, decays after scrolling stops
+  private scrollWalkDir = 1;      // +1 = wheel down (page scrolls down) -> walk right; -1 = wheel up -> walk left
+  private scrollWalkPhase = 0;    // step-cycle phase
+  private scrollHop = 0;          // per-notch hop impulse
   private lastMouseMoveAt = -10000;
   private mouseBadges: Array<{
     id: number;
@@ -398,9 +403,19 @@ export class KuroCatEngine {
     const shearCurve = u * u * (3 - 2 * u); // smoothstep from hips up to head!
     // Measured mouse-lean shift (-46px at head) + lively typing left-right body/head sway (+-25px)!
     const leanAmp = this.keyboardLayout === '108' ? 76 : 46;
-    const leanX = (this.spineLean * leanAmp + this.typingSway * 25 + this.strikeRock * 10) * shearCurve;
+    // 滚轮行走: directional step-lean + hop/bounce bob, hips stay anchored (treadmill feel)
+    const walkWave = Math.sin(this.scrollWalkPhase);
+    const walkX =
+      this.scrollWalkDir * (5.5 + 5.0 * Math.abs(walkWave)) * this.scrollWalkEnergy * shearCurve;
+    const walkBobY =
+      -(Math.abs(Math.sin(this.scrollWalkPhase)) * 5.5 + this.scrollHop * 9.0) *
+      this.scrollWalkEnergy *
+      shearCurve;
+    const leanX =
+      (this.spineLean * leanAmp + this.typingSway * 25 + this.strikeRock * 10) * shearCurve + walkX;
     const swayDipY = Math.abs(this.typingSway) * 4.0 * shearCurve;
-    const hunchY = (this.typingHunch * 13 + this.bodyBob * 4.8 + breath) * shearCurve + swayDipY;
+    const hunchY =
+      (this.typingHunch * 13 + this.bodyBob * 4.8 + breath) * shearCurve + swayDipY + walkBobY;
     // Slight forward drop when leaning deeply to the mouse
     const leanDropY = Math.abs(this.spineLean) * 6 * shearCurve;
     return {
@@ -664,13 +679,27 @@ export class KuroCatEngine {
     else if (button === 'middle') this.mouseMiddleDown = false;
   }
 
-  public onMouseWheel(): void {
+  public onMouseWheel(delta?: number): void {
     const now = performance.now();
     this.mouseScrollFlash = 1;
     this.lastMouseMoveAt = now;
-    this.dafeiyu.resetLeftHandForMouse();
-    this.leftPaw.mode = 'mouse';
-    this.leftPaw.lastActiveAt = now;
+    // Walk with the wheel: direction follows the scroll, intensity stacks with
+    // rapid notches (fast scrolling = energetic scamper) and decays when idle.
+    if (typeof delta === 'number' && delta !== 0) {
+      this.scrollWalkDir = delta > 0 ? 1 : -1;
+    }
+    this.scrollWalkEnergy = Math.min(1, this.scrollWalkEnergy + 0.3);
+    this.scrollHop = 1;
+    this.scrollWalkPhase += 1.1;
+  }
+
+  // 择机而动 wake-up: a cute stretch-and-twitch greeting after auto-hide
+  public onIdleWake(): void {
+    this.petEnergy = Math.min(1, this.petEnergy + 0.4);
+    this.earTwitchLeft = 1;
+    this.earTwitchRight = 1;
+    this.bodyBob = Math.min(1.15, this.bodyBob + 0.5);
+    this.nextBlinkAt = this.elapsed + 0.4 + Math.random() * 0.8;
   }
 
   public onWindowCursor(relX: number, relY: number, overCat: boolean): void {
@@ -820,6 +849,12 @@ export class KuroCatEngine {
       this.mouseMiddlePress = Math.max(0, this.mouseMiddlePress - dt * 5.8);
     }
     this.mouseScrollFlash = Math.max(0, this.mouseScrollFlash - dt * 4.5);
+    // Scroll-walk decay: energy bleeds away after scrolling stops, phase keeps steps rolling
+    this.scrollWalkEnergy = Math.max(0, this.scrollWalkEnergy - dt * 1.5);
+    this.scrollHop = Math.max(0, this.scrollHop - dt * 5.5);
+    if (this.scrollWalkEnergy > 0.001) {
+      this.scrollWalkPhase += dt * (7.5 + this.scrollWalkEnergy * 6.0);
+    }
     this.mouseBadges = this.mouseBadges.filter((b) => now - b.createdAt < b.lifetime);
 
     while (this.recentKeyTimes.length > 0 && now - this.recentKeyTimes[0] > 950) {
@@ -867,7 +902,8 @@ export class KuroCatEngine {
     const desiredHeadTilt =
       this.typingSway * 0.18 +
       this.typingHunch * (this.strikeRock * 0.065 - 0.02) +
-      this.spineLean * 0.085;
+      this.spineLean * 0.085 +
+      this.scrollWalkDir * this.scrollWalkEnergy * 0.055;
     this.headTilt += (desiredHeadTilt - this.headTilt) * (1 - Math.exp(-12 * dt));
 
     this.petEnergy = Math.max(0, this.petEnergy - dt * (this.cursorOverCat ? 0.22 : 1.15));

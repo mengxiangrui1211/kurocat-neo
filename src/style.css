@@ -34,6 +34,11 @@ html.win7-ulw-mode .update-toast {
   width: 100vw;
   height: 100vh;
   background: transparent;
+  transition: opacity 0.38s ease;
+}
+
+#pet-canvas.idle-fade {
+  opacity: 0;
 }
 
 #pet-canvas.pet-hover {

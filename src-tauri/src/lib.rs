@@ -109,6 +109,18 @@ pub fn is_pet_visible(app: &AppHandle) -> bool {
 }
 
 pub fn set_pet_visible(app: &AppHandle, visible: bool) {
+    if visible {
+        // Manual shows (tray / menu / wake) always reset the idle countdown so the
+        // 择机而动 watcher never fights a user who just asked for the cat back.
+        // Emitting the wake event also clears the frontend fade so the cat is never
+        // shown at opacity 0 after a manual reveal.
+        let was_idle_hidden = crate::input_hook::is_idle_hidden();
+        crate::input_hook::mark_activity();
+        crate::input_hook::clear_idle_hidden();
+        if was_idle_hidden {
+            let _ = app.emit("kuro-idle-wake", true);
+        }
+    }
     let on_top = app
         .state::<AppState>()
         .settings
@@ -146,6 +158,65 @@ pub fn set_pet_visible(app: &AppHandle, visible: bool) {
             let _ = win.hide();
         }
     }
+}
+
+/// 择机而动: fades the pet out after `idle_hide_timeout_secs` without any physical
+/// keyboard/mouse/wheel input, and leaves it hidden until the next input event
+/// (the global input hook wakes it instantly via `maybe_idle_wake`).
+fn start_idle_hide_watcher(app: AppHandle) {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_millis(200));
+            let (enabled, timeout_ms) = {
+                let state = app.state::<AppState>();
+                let s = state.settings.lock().unwrap();
+                (
+                    s.idle_hide_enabled,
+                    (s.idle_hide_timeout_secs as u64).clamp(1, 60) * 1000,
+                )
+            };
+            if !enabled || input_hook::is_idle_hidden() {
+                continue;
+            }
+            let state = app.state::<AppState>();
+            if state
+                .paused_guard
+                .load(Ordering::Relaxed)
+                || state.menu_open.load(Ordering::Relaxed)
+                || state.dragging.load(Ordering::Relaxed)
+                || state.update_banner_open.load(Ordering::Relaxed)
+            {
+                continue;
+            }
+            if !is_pet_visible(&app) {
+                continue;
+            }
+            if input_hook::idle_elapsed_ms() < timeout_ms {
+                continue;
+            }
+
+            // Frontend fades the canvas out over ~380ms before we hide the window.
+            let _ = app.emit("kuro-idle-hide", true);
+            std::thread::sleep(Duration::from_millis(430));
+
+            // Abort if any input / interaction happened during the fade-out.
+            let (still_enabled, interactive) = {
+                let state = app.state::<AppState>();
+                (
+                    state.settings.lock().unwrap().idle_hide_enabled,
+                    state.menu_open.load(Ordering::Relaxed)
+                        || state.dragging.load(Ordering::Relaxed)
+                        || state.update_banner_open.load(Ordering::Relaxed)
+                        || state.paused_guard.load(Ordering::Relaxed),
+                )
+            };
+            if !still_enabled || interactive || input_hook::idle_elapsed_ms() < 600 {
+                continue;
+            }
+            input_hook::set_idle_hidden(true);
+            set_pet_visible(&app, false);
+        }
+    });
 }
 
 pub fn set_pet_always_on_top(app: &AppHandle, on_top: bool) {
@@ -1588,6 +1659,8 @@ pub fn run() {
 
             tray::setup_tray(&handle, &s)?;
             input_hook::start_global_hooks(handle.clone());
+            input_hook::mark_activity(); // don't hide instantly when the feature is enabled on launch
+            start_idle_hide_watcher(handle.clone());
             privacy::start_password_privacy_watcher(
                 handle.clone(),
                 settings_for_setup.clone(),

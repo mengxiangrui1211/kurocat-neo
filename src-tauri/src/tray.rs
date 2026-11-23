@@ -71,6 +71,24 @@ pub fn setup_tray(app: &AppHandle, initial: &AppSettings) -> tauri::Result<()> {
         initial.sound_enabled,
         None::<&str>,
     )?;
+    let idle_hide = CheckMenuItem::with_id(
+        app,
+        "idle_hide",
+        "择机而动（无输入自动隐身）",
+        true,
+        initial.idle_hide_enabled,
+        None::<&str>,
+    )?;
+    let idle_t_1 = CheckMenuItem::with_id(app, "idle_t_1", "1 秒", true, initial.idle_hide_timeout_secs == 1, None::<&str>)?;
+    let idle_t_3 = CheckMenuItem::with_id(app, "idle_t_3", "3 秒（默认）", true, initial.idle_hide_timeout_secs == 3, None::<&str>)?;
+    let idle_t_5 = CheckMenuItem::with_id(app, "idle_t_5", "5 秒", true, initial.idle_hide_timeout_secs == 5, None::<&str>)?;
+    let idle_t_10 = CheckMenuItem::with_id(app, "idle_t_10", "10 秒", true, initial.idle_hide_timeout_secs == 10, None::<&str>)?;
+    let idle_timeout_menu = Submenu::with_items(
+        app,
+        "隐身延时（多久没动作就隐身）",
+        true,
+        &[&idle_t_1, &idle_t_3, &idle_t_5, &idle_t_10],
+    )?;
     let always_on_top = CheckMenuItem::with_id(
         app,
         "always_on_top",
@@ -265,6 +283,8 @@ pub fn setup_tray(app: &AppHandle, initial: &AppSettings) -> tauri::Result<()> {
             &privacy_guard,
             &key_bubbles,
             &sound_toggle,
+            &idle_hide,
+            &idle_timeout_menu,
             &always_on_top,
             &breed_menu,
             &kb_menu,
@@ -384,6 +404,39 @@ pub fn setup_tray(app: &AppHandle, initial: &AppSettings) -> tauri::Result<()> {
                     crate::config::save_settings(&s);
                     let _ = sound_toggle.set_checked(enabled);
                     let _ = app.emit("kuro-settings", s.clone());
+                }
+                "idle_hide" => {
+                    let mut s = state.settings.lock().unwrap();
+                    s.idle_hide_enabled = !s.idle_hide_enabled;
+                    let enabled = s.idle_hide_enabled;
+                    crate::config::save_settings(&s);
+                    let _ = idle_hide.set_checked(enabled);
+                    let _ = app.emit("kuro-settings", s.clone());
+                    if enabled {
+                        // Reset the countdown so the cat doesn't vanish right after enabling.
+                        crate::input_hook::mark_activity();
+                    } else if crate::input_hook::is_idle_hidden() {
+                        // Turning the feature off while hidden brings the cat back.
+                        crate::input_hook::clear_idle_hidden();
+                        set_pet_visible(app, true);
+                    }
+                }
+                "idle_t_1" | "idle_t_3" | "idle_t_5" | "idle_t_10" => {
+                    let secs: u32 = match event.id().as_ref() {
+                        "idle_t_1" => 1,
+                        "idle_t_3" => 3,
+                        "idle_t_5" => 5,
+                        _ => 10,
+                    };
+                    let mut s = state.settings.lock().unwrap();
+                    s.idle_hide_timeout_secs = secs;
+                    crate::config::save_settings(&s);
+                    let _ = idle_t_1.set_checked(secs == 1);
+                    let _ = idle_t_3.set_checked(secs == 3);
+                    let _ = idle_t_5.set_checked(secs == 5);
+                    let _ = idle_t_10.set_checked(secs == 10);
+                    let _ = app.emit("kuro-settings", s.clone());
+                    crate::input_hook::mark_activity();
                 }
                 "always_on_top" => {
                     let (on_top, updated) = {

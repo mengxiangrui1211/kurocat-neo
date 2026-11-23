@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -70,6 +70,56 @@ static KEY_EVENTS_RECEIVED: AtomicU64 = AtomicU64::new(0);
 static ALT_HELD: AtomicBool = AtomicBool::new(false);
 static HOOKS_PAUSED: AtomicBool = AtomicBool::new(false);
 static PASSWORD_PRIVACY_ACTIVE: AtomicBool = AtomicBool::new(false);
+// ---- 择机而动 (idle auto-hide) activity tracking ----
+static LAST_INPUT_MS: AtomicU64 = AtomicU64::new(0);
+static IDLE_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub fn mark_activity() {
+    LAST_INPUT_MS.store(now_ms(), Ordering::Relaxed);
+}
+
+pub fn idle_elapsed_ms() -> u64 {
+    now_ms().saturating_sub(LAST_INPUT_MS.load(Ordering::Relaxed))
+}
+
+pub fn is_idle_hidden() -> bool {
+    IDLE_HIDDEN.load(Ordering::Relaxed)
+}
+
+pub fn set_idle_hidden(hidden: bool) {
+    IDLE_HIDDEN.store(hidden, Ordering::Relaxed);
+}
+
+pub fn clear_idle_hidden() {
+    IDLE_HIDDEN.store(false, Ordering::Relaxed);
+}
+
+/// Woke the pet back up on the first input event while it was idle-hidden.
+/// Runs on the hook dispatcher thread; window show is marshalled to the main thread.
+/// `set_pet_visible(true)` emits `kuro-idle-wake` so the frontend clears its fade.
+fn maybe_idle_wake(app: &AppHandle) {
+    if !IDLE_HIDDEN.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    let enabled = app
+        .try_state::<crate::AppState>()
+        .map(|s| s.settings.lock().unwrap().idle_hide_enabled)
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+    let app_for_wake = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        crate::set_pet_visible(&app_for_wake, true);
+    });
+}
 
 pub fn set_password_privacy_active(active: bool) {
     PASSWORD_PRIVACY_ACTIVE.store(active, Ordering::SeqCst);
@@ -356,6 +406,10 @@ pub fn start_global_hooks(app: AppHandle) {
             if HOOKS_PAUSED.load(Ordering::Relaxed) {
                 continue;
             }
+            // 择机而动: every physical input refreshes the activity timestamp and
+            // instantly wakes the pet when it was auto-hidden by idle timeout.
+            mark_activity();
+            maybe_idle_wake(&app);
             match msg {
                 RawHookMsg::KeyDown { vk, scan, source } => {
                     if is_alt_vk(vk) {

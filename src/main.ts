@@ -22,6 +22,8 @@ interface AppSettings {
   keyboardLayout: KeyboardLayoutId;
   keyboardOrientation: KeyboardOrientation;
   privacyPasswordGuard: boolean;
+  idleHideEnabled: boolean;
+  idleHideTimeoutSecs: number;
 }
 
 type InputEvent =
@@ -85,6 +87,8 @@ let settings: AppSettings = {
   keyboardLayout: '65',
   keyboardOrientation: 'cat',
   privacyPasswordGuard: true,
+  idleHideEnabled: false,
+  idleHideTimeoutSecs: 3,
 };
 
 let catList: CatSkinConfig[] = [...DEFAULT_BUILTIN_CATS];
@@ -141,6 +145,7 @@ function syncMenuUI(): void {
   setCheck('chk-top', settings.alwaysOnTop);
   setCheck('chk-autostart', settings.autostart);
   setCheck('chk-mcp', settings.mcpEnabled);
+  setCheck('chk-idle', settings.idleHideEnabled);
 
   if (!sliderDragging) {
     updateScaleSliderVisual(settings.scale);
@@ -507,7 +512,7 @@ async function bootstrap(): Promise<void> {
         engine.onMouseUp(p.button);
         break;
       case 'mouseWheel':
-        engine.onMouseWheel();
+        engine.onMouseWheel(p.delta);
         break;
       case 'privacyTyping':
         engine.onPrivacyTyping();
@@ -517,6 +522,15 @@ async function bootstrap(): Promise<void> {
 
   await listen<boolean>('kuro-privacy', (ev) => {
     engine.setPrivacyMode(Boolean(ev.payload));
+  });
+
+  // 择机而动: fade the whole pet out/in around the Rust-side window show/hide
+  await listen<boolean>('kuro-idle-hide', () => {
+    canvas.classList.add('idle-fade');
+  });
+  await listen<boolean>('kuro-idle-wake', () => {
+    canvas.classList.remove('idle-fade');
+    engine.onIdleWake();
   });
 
   await listen<WindowCursorInfo>('kuro-cursor', (ev) => {
@@ -612,6 +626,9 @@ async function bootstrap(): Promise<void> {
         break;
       case 'toggle-mcp':
         void applySettingsPatch({ mcpEnabled: !settings.mcpEnabled });
+        break;
+      case 'toggle-idle':
+        void applySettingsPatch({ idleHideEnabled: !settings.idleHideEnabled });
         break;
       case 'copy-mcp':
         void copyMcpConfig();

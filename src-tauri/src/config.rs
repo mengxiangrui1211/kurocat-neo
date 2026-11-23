@@ -14,6 +14,10 @@ fn default_privacy_password_guard() -> bool {
     true
 }
 
+fn default_idle_hide_timeout_secs() -> u32 {
+    3
+}
+
 fn default_mcp_port() -> u16 {
     27420
 }
@@ -69,6 +73,10 @@ pub struct AppSettings {
     pub keyboard_orientation: String,
     #[serde(default = "default_privacy_password_guard")]
     pub privacy_password_guard: bool,
+    #[serde(default)]
+    pub idle_hide_enabled: bool,
+    #[serde(default = "default_idle_hide_timeout_secs")]
+    pub idle_hide_timeout_secs: u32,
 }
 
 impl Default for AppSettings {
@@ -127,6 +135,7 @@ pub fn load_settings() -> AppSettings {
     if let Ok(content) = fs::read_to_string(&path) {
         if let Ok(mut parsed) = serde_json::from_str::<AppSettings>(&content) {
             parsed.scale = parsed.scale.clamp(0.20, 1.50);
+            parsed.idle_hide_timeout_secs = parsed.idle_hide_timeout_secs.clamp(1, 60);
             return parsed;
         }
     }
