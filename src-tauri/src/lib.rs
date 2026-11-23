@@ -212,11 +212,27 @@ fn start_idle_hide_watcher(app: AppHandle) {
                     || state.update_banner_open.load(Ordering::Relaxed)
                     || state.paused_guard.load(Ordering::Relaxed);
             }
-            if !still_enabled || interactive || input_hook::idle_elapsed_ms() < 600 {
+            let aborted = !still_enabled
+                || interactive
+                || input_hook::idle_elapsed_ms() < 600;
+            if aborted {
+                // CRITICAL: we already told the frontend to fade out (opacity 0).
+                // If we abort here without cancelling, the canvas stays invisible
+                // while the window is still "shown" and IDLE_HIDDEN is false, so
+                // no future input can ever wake it (the cat becomes a ghost until
+                // a manual show). Emitting kuro-idle-wake removes the fade class.
+                let _ = app.emit("kuro-idle-wake", true);
                 continue;
             }
             input_hook::set_idle_hidden(true);
             set_pet_visible(&app, false);
+            // Race guard: an input event may have woken the pet between
+            // set_idle_hidden(true) and the hide above (wake's show() and our
+            // hide() are serialized on the main thread in unpredictable order).
+            // If the wake already consumed the flag, re-show deterministically.
+            if !input_hook::is_idle_hidden() {
+                set_pet_visible(&app, true);
+            }
         }
     });
 }

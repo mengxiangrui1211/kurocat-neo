@@ -108,13 +108,11 @@ fn maybe_idle_wake(app: &AppHandle) {
     if !IDLE_HIDDEN.swap(false, Ordering::Relaxed) {
         return;
     }
-    let enabled = app
-        .try_state::<crate::AppState>()
-        .map(|s| s.settings.lock().unwrap().idle_hide_enabled)
-        .unwrap_or(false);
-    if !enabled {
-        return;
-    }
+    // NOTE: intentionally no `idle_hide_enabled` check here. The flag was only
+    // set while the feature was enabled; swapping it back and reading settings
+    // afterwards loses the state when the user toggles the feature off while
+    // hidden, leaving the window hidden with no way to wake it. Any input while
+    // idle-hidden always wakes.
     // Emit on the hook thread BEFORE set_pet_visible: by the time the main
     // thread runs it, IDLE_HIDDEN is already false, so set_pet_visible's own
     // was_idle_hidden check would never fire and the frontend would stay at
@@ -400,6 +398,11 @@ pub fn linux_evdev_to_vk(code: u16) -> Option<u32> {
 pub fn start_global_hooks(app: AppHandle) {
     let (tx, rx) = mpsc::channel::<RawHookMsg>();
     let _ = HOOK_TX.set(tx);
+
+    // Seed the activity clock so the idle watcher doesn't see a huge elapsed
+    // time (LAST_INPUT_MS starts at 0 = UNIX epoch) and insta-hide the pet
+    // right after launch before the first real input event arrives.
+    mark_activity();
 
     // Dispatcher thread: deduplicates held key repeats & dual-channel macOS events,
     // and throttles mouse moves to ~60Hz
