@@ -1022,20 +1022,55 @@ pub fn configure_macos_fullscreen_overlay(win: &tauri::WebviewWindow, always_on_
 }
 
 fn is_over_interactive_silhouette(rx: f64, ry: f64, is_108: bool) -> (bool, bool) {
-    // Cat body/head oval centered around (0.48, 0.49) for 65% or (0.51, 0.48) for 108-key
-    let (cat_cx, cat_rx) = if is_108 { (0.51, 0.21) } else { (0.48, 0.25) };
+    // Cat body/head oval centered around (0.48, 0.49) for 65% or (0.51, 0.48) for 108-key.
+    // Generous margins so the ears / paw edges / walk-shifted pose remain grabbable —
+    // a click on the visible cat that falls outside this region passes through the
+    // window and feels like "sometimes dragging doesn't work".
+    let (cat_cx, cat_rx, cat_ry, cat_cy) = if is_108 {
+        (0.51, 0.24, 0.31, 0.47)
+    } else {
+        (0.48, 0.28, 0.31, 0.47)
+    };
     let dx_cat = (rx - cat_cx) / cat_rx;
-    let dy_cat = (ry - 0.49) / 0.27;
+    let dy_cat = (ry - cat_cy) / cat_ry;
     let over_cat = (dx_cat * dx_cat + dy_cat * dy_cat) <= 1.0;
 
     // Keyboard & mouse lower area
     let over_desk = if is_108 {
-        rx >= 0.04 && rx <= 0.94 && ry >= 0.65 && ry <= 0.94
+        rx >= 0.04 && rx <= 0.94 && ry >= 0.62 && ry <= 0.94
     } else {
-        rx >= 0.06 && rx <= 0.92 && ry >= 0.65 && ry <= 0.91
+        rx >= 0.06 && rx <= 0.92 && ry >= 0.62 && ry <= 0.91
     };
 
     (over_cat || over_desk, over_cat)
+}
+
+/// Windows caches the hit-test result ("which window is under a stationary
+/// cursor") and does NOT re-evaluate it when WS_EX_TRANSPARENT is toggled —
+/// only on the next physical mouse move. After we flip click-through while the
+/// cursor is inside our window, nudge the cursor by 1px and back so the OS
+/// re-hit-tests immediately; otherwise the first click on the pet can still
+/// pass through to whatever is underneath ("sometimes drag doesn't work").
+#[cfg(windows)]
+fn kick_cursor_hit_test() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT, INPUT_MOUSE, MOUSEEVENTF_MOVE};
+    unsafe {
+        let nudge = |dx: i32| INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+                mi: windows_sys::Win32::UI::Input::KeyboardAndMouse::MOUSEINPUT {
+                    dx,
+                    dy: 0,
+                    mouseData: 0,
+                    dwFlags: MOUSEEVENTF_MOVE,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let mut inputs = [nudge(1), nudge(-1)];
+        SendInput(2, inputs.as_mut_ptr(), std::mem::size_of::<INPUT>() as i32);
+    }
 }
 
 fn start_hit_test_loop(
@@ -1265,6 +1300,12 @@ fn start_hit_test_loop(
                 #[cfg(windows)]
                 {
                     drift_ticks = 0;
+                    // Force the OS to re-hit-test now instead of waiting for the
+                    // user's next physical mouse move (stale cache = first click
+                    // on the pet passes through).
+                    if inside {
+                        kick_cursor_hit_test();
+                    }
                 }
             } else {
                 // Self-heal Windows WS_EX_TRANSPARENT if DWM / Wallpaper Engine / Show-Desktop drifted it
@@ -1286,6 +1327,9 @@ fn start_hit_test_loop(
                                     let _ = win.set_ignore_cursor_events(should_ignore);
                                 }
                                 drift_ticks = 0;
+                                if inside {
+                                    kick_cursor_hit_test();
+                                }
                             }
                         } else {
                             drift_ticks = 0;
