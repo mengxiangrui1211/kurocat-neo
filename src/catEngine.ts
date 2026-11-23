@@ -406,9 +406,9 @@ export class KuroCatEngine {
     // 滚轮行走: directional step-lean + hop/bounce bob, hips stay anchored (treadmill feel)
     const walkWave = Math.sin(this.scrollWalkPhase);
     const walkX =
-      this.scrollWalkDir * (5.5 + 5.0 * Math.abs(walkWave)) * this.scrollWalkEnergy * shearCurve;
+      this.scrollWalkDir * (11 + 11 * Math.abs(walkWave)) * this.scrollWalkEnergy * shearCurve;
     const walkBobY =
-      -(Math.abs(Math.sin(this.scrollWalkPhase)) * 5.5 + this.scrollHop * 9.0) *
+      -(Math.abs(Math.sin(this.scrollWalkPhase)) * 9 + this.scrollHop * 15) *
       this.scrollWalkEnergy *
       shearCurve;
     const leanX =
@@ -688,9 +688,9 @@ export class KuroCatEngine {
     if (typeof delta === 'number' && delta !== 0) {
       this.scrollWalkDir = delta > 0 ? 1 : -1;
     }
-    this.scrollWalkEnergy = Math.min(1, this.scrollWalkEnergy + 0.3);
+    this.scrollWalkEnergy = Math.min(1, this.scrollWalkEnergy + 0.45);
     this.scrollHop = 1;
-    this.scrollWalkPhase += 1.1;
+    this.scrollWalkPhase += 1.4;
   }
 
   // 择机而动 wake-up: a cute stretch-and-twitch greeting after auto-hide
@@ -903,7 +903,7 @@ export class KuroCatEngine {
       this.typingSway * 0.18 +
       this.typingHunch * (this.strikeRock * 0.065 - 0.02) +
       this.spineLean * 0.085 +
-      this.scrollWalkDir * this.scrollWalkEnergy * 0.055;
+      this.scrollWalkDir * this.scrollWalkEnergy * 0.09;
     this.headTilt += (desiredHeadTilt - this.headTilt) * (1 - Math.exp(-12 * dt));
 
     this.petEnergy = Math.max(0, this.petEnergy - dt * (this.cursorOverCat ? 0.22 : 1.15));

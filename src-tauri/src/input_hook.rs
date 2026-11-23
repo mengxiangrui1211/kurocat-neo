@@ -115,6 +115,11 @@ fn maybe_idle_wake(app: &AppHandle) {
     if !enabled {
         return;
     }
+    // Emit on the hook thread BEFORE set_pet_visible: by the time the main
+    // thread runs it, IDLE_HIDDEN is already false, so set_pet_visible's own
+    // was_idle_hidden check would never fire and the frontend would stay at
+    // opacity 0 (the infamous "hidden forever after wake" race).
+    let _ = app.emit("kuro-idle-wake", true);
     let app_for_wake = app.clone();
     let _ = app.run_on_main_thread(move || {
         crate::set_pet_visible(&app_for_wake, true);
