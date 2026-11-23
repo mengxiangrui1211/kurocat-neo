@@ -96,6 +96,8 @@ impl Default for AppSettings {
             keyboard_layout: default_keyboard_layout(),
             keyboard_orientation: default_keyboard_orientation(),
             privacy_password_guard: default_privacy_password_guard(),
+            idle_hide_enabled: false,
+            idle_hide_timeout_secs: default_idle_hide_timeout_secs(),
         }
     }
 }

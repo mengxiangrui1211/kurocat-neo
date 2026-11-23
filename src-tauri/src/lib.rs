@@ -200,16 +200,18 @@ fn start_idle_hide_watcher(app: AppHandle) {
             std::thread::sleep(Duration::from_millis(430));
 
             // Abort if any input / interaction happened during the fade-out.
-            let (still_enabled, interactive) = {
+            // Read flags via local bindings so the MutexGuard drops inside the block
+            // (a trailing expression would extend the borrow past `state`'s scope).
+            let still_enabled;
+            let interactive;
+            {
                 let state = app.state::<AppState>();
-                (
-                    state.settings.lock().unwrap().idle_hide_enabled,
-                    state.menu_open.load(Ordering::Relaxed)
-                        || state.dragging.load(Ordering::Relaxed)
-                        || state.update_banner_open.load(Ordering::Relaxed)
-                        || state.paused_guard.load(Ordering::Relaxed),
-                )
-            };
+                still_enabled = state.settings.lock().unwrap().idle_hide_enabled;
+                interactive = state.menu_open.load(Ordering::Relaxed)
+                    || state.dragging.load(Ordering::Relaxed)
+                    || state.update_banner_open.load(Ordering::Relaxed)
+                    || state.paused_guard.load(Ordering::Relaxed);
+            }
             if !still_enabled || interactive || input_hook::idle_elapsed_ms() < 600 {
                 continue;
             }
