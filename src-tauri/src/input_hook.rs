@@ -68,6 +68,13 @@ enum RawHookMsg {
         x: i32,
         y: i32,
     },
+    #[cfg(windows)]
+    DragMove {
+        x: i32,
+        y: i32,
+    },
+    #[cfg(windows)]
+    DragEnd,
 }
 
 static HOOK_TX: OnceLock<mpsc::Sender<RawHookMsg>> = OnceLock::new();
@@ -414,6 +421,8 @@ pub fn start_global_hooks(app: AppHandle) {
     std::thread::spawn(move || {
         let mut dedup = KeyDeduplicator::new();
         let mut last_mouse_emit = Instant::now() - Duration::from_secs(1);
+        #[cfg(windows)]
+        let mut last_drag_emit = Instant::now() - Duration::from_secs(1);
 
         while let Ok(msg) = rx.recv() {
             if HOOKS_PAUSED.load(Ordering::Relaxed) {
@@ -493,12 +502,32 @@ pub fn start_global_hooks(app: AppHandle) {
                     }
                 }
                 RawHookMsg::MouseMove { x, y } => {
+                    #[cfg(windows)]
+                    if crate::hook_drag_active() {
+                        let now = Instant::now();
+                        if now.duration_since(last_drag_emit) >= Duration::from_millis(16) {
+                            last_drag_emit = now;
+                            let _ = tx.send(RawHookMsg::DragMove { x, y });
+                        }
+                        // While dragging we don't need the extra cursor-trace
+                        // emission; skip it to keep the hook cheap.
+                        continue;
+                    }
                     let now = Instant::now();
                     if now.duration_since(last_mouse_emit) >= Duration::from_millis(16) {
                         last_mouse_emit = now;
                         let (nx, ny) = normalize_screen_point(x, y);
                         let _ = app.emit("kuro-input", InputEvent::MouseMove { x, y, nx, ny });
                     }
+                }
+                #[cfg(windows)]
+                RawHookMsg::DragMove { x, y } => {
+                    crate::hook_drag_step(x, y);
+                }
+                #[cfg(windows)]
+                RawHookMsg::DragEnd => {
+                    crate::hook_drag_finish();
+                    crate::persist_pet_window_pos(&app);
                 }
             }
         }
@@ -619,6 +648,10 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: usize, lparam: isiz
                 }
                 WM_LBUTTONUP => {
                     let _ = tx.send(RawHookMsg::MouseUp("left"));
+                    #[cfg(windows)]
+                    if crate::hook_drag_active() {
+                        let _ = tx.send(RawHookMsg::DragEnd);
+                    }
                 }
                 WM_RBUTTONDOWN => {
                     let _ = tx.send(RawHookMsg::MouseDown("right"));

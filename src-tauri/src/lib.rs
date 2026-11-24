@@ -57,7 +57,7 @@ pub fn window_dimensions(layout: &str, scale: f64) -> (f64, f64) {
 // swallows the click and posts WM_NCLBUTTONDOWN(HTCAPTION) straight to the
 // window, starting a native drag with zero latency and zero races.
 #[cfg(windows)]
-use std::sync::atomic::{AtomicIsize, AtomicU32};
+use std::sync::atomic::{AtomicI32, AtomicIsize, AtomicU32};
 
 #[cfg(windows)]
 pub static PET_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -75,6 +75,10 @@ static PET_HOOK_BW_MILLI: AtomicU32 = AtomicU32::new(420_000);
 static PET_HOOK_BH_MILLI: AtomicU32 = AtomicU32::new(440_000);
 #[cfg(windows)]
 static PET_HOOK_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static PET_HOOK_GRAB_DX: AtomicI32 = AtomicI32::new(0);
+#[cfg(windows)]
+static PET_HOOK_GRAB_DY: AtomicI32 = AtomicI32::new(0);
 
 /// Called from the WH_MOUSE_LL hook at button-down time. Lock-free and
 /// non-blocking: on any doubt it returns false so the click passes through
@@ -139,28 +143,87 @@ pub fn pet_hit_test_at_screen(sx: i32, sy: i32) -> bool {
     }
 }
 
-/// Swallow-then-drag: start a native HTCAPTION modal drag at the cursor the
-/// user pressed on. Called from the mouse hook thread.
+/// Swallow-then-drag: record the grab offset (cursor - window origin) at
+/// button-down time. Called from the mouse hook thread. The actual window
+/// movement is done in `hook_drag_step` — empirically, posting
+/// WM_NCLBUTTONDOWN(HTCAPTION) to the Tauri window does NOT start a native
+/// modal drag (tao swallows it), so we move the window ourselves.
 #[cfg(windows)]
 pub fn begin_hook_drag(sx: i32, sy: i32) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        HTCAPTION, PostMessageW, WM_NCLBUTTONDOWN,
-    };
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
     let hwnd = PET_HWND.load(Ordering::Relaxed);
     if hwnd == 0 {
         return;
     }
-    PET_HOOK_DRAG_ACTIVE.store(true, Ordering::Relaxed);
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
     unsafe {
-        // MAKELPARAM(x, y): low word = x, high word = y (16-bit wrap-around
-        // for negative multi-monitor coordinates).
-        let lparam = (((sy as u16 as usize) << 16) | (sx as u16 as usize)) as isize;
-        PostMessageW(
+        if GetWindowRect(hwnd as windows_sys::Win32::Foundation::HWND, &mut rc) == 0 {
+            return;
+        }
+    }
+    PET_HOOK_GRAB_DX.store(sx - rc.left, Ordering::Relaxed);
+    PET_HOOK_GRAB_DY.store(sy - rc.top, Ordering::Relaxed);
+    PET_HOOK_DRAG_ACTIVE.store(true, Ordering::Relaxed);
+}
+
+/// Move the window so the grab point follows the cursor. Called from the
+/// hook consumer thread (throttled to ~60 Hz).
+#[cfg(windows)]
+pub fn hook_drag_step(sx: i32, sy: i32) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+    if !PET_HOOK_DRAG_ACTIVE.load(Ordering::Relaxed) {
+        return;
+    }
+    let hwnd = PET_HWND.load(Ordering::Relaxed);
+    if hwnd == 0 {
+        return;
+    }
+    let dx = PET_HOOK_GRAB_DX.load(Ordering::Relaxed);
+    let dy = PET_HOOK_GRAB_DY.load(Ordering::Relaxed);
+    unsafe {
+        SetWindowPos(
             hwnd as windows_sys::Win32::Foundation::HWND,
-            WM_NCLBUTTONDOWN,
-            HTCAPTION as usize,
-            lparam,
+            std::ptr::null_mut(),
+            sx - dx,
+            sy - dy,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
         );
+    }
+}
+
+#[cfg(windows)]
+pub fn hook_drag_active() -> bool {
+    PET_HOOK_DRAG_ACTIVE.load(Ordering::Relaxed)
+}
+
+#[cfg(windows)]
+pub fn hook_drag_finish() {
+    PET_HOOK_DRAG_ACTIVE.store(false, Ordering::Relaxed);
+}
+
+/// Persist the current window position to settings (hook-driven drag end).
+#[cfg(windows)]
+pub fn persist_pet_window_pos(app: &AppHandle) {
+    let Some(state) = app.try_state::<crate::AppState>() else {
+        return;
+    };
+    if let Some(win) = app.get_webview_window("main") {
+        if let Ok(pos) = win.outer_position() {
+            let mut s = state.settings.lock().unwrap();
+            s.x = Some(pos.x);
+            s.y = Some(pos.y);
+            save_settings(&s);
+        }
     }
 }
 
@@ -1401,8 +1464,9 @@ fn start_hit_test_loop(
 
             let over_banner = is_banner && inside && ry <= 0.19;
 
-            // Publish a fresh lock-free snapshot for the mouse-hook drag path
-            // and detect the end of a hook-initiated native drag.
+            // Publish a fresh lock-free snapshot for the mouse-hook drag path.
+            // Drag movement and drag end are handled entirely by the hook +
+            // consumer thread (hook_drag_step / DragEnd).
             #[cfg(windows)]
             if !is_win7_ulw {
                 PET_HOOK_IS108.store(is_108, Ordering::Relaxed);
@@ -1416,26 +1480,6 @@ fn start_hit_test_loop(
                     !is_menu && !is_drag && !over_banner && !effective_locked,
                     Ordering::Relaxed,
                 );
-                if PET_HOOK_DRAG_ACTIVE.load(Ordering::Relaxed) {
-                    let held = unsafe {
-                        windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(
-                            windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_LBUTTON as i32,
-                        )
-                    } as u16
-                        & 0x8000
-                        != 0;
-                    if !held {
-                        PET_HOOK_DRAG_ACTIVE.store(false, Ordering::Relaxed);
-                        // Persist the final position the way the frontend's
-                        // save_window_pos command would have.
-                        if let Ok(pos) = win.outer_position() {
-                            let mut s = settings.lock().unwrap();
-                            s.x = Some(pos.x);
-                            s.y = Some(pos.y);
-                            save_settings(&s);
-                        }
-                    }
-                }
             }
 
             let hook_drag_active = if cfg!(windows) {
