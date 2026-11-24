@@ -409,7 +409,7 @@ pub fn linux_evdev_to_vk(code: u16) -> Option<u32> {
 
 pub fn start_global_hooks(app: AppHandle) {
     let (tx, rx) = mpsc::channel::<RawHookMsg>();
-    let _ = HOOK_TX.set(tx);
+    let _ = HOOK_TX.set(tx.clone());
 
     // Seed the activity clock so the idle watcher doesn't see a huge elapsed
     // time (LAST_INPUT_MS starts at 0 = UNIX epoch) and insta-hide the pet
