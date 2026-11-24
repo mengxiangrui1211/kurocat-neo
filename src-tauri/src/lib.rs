@@ -82,7 +82,7 @@ static PET_HOOK_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 pub fn pet_hit_test_at_screen(sx: i32, sy: i32) -> bool {
     use windows_sys::Win32::Foundation::{POINT, RECT};
-    use windows_sys::Win32::Gdi::ScreenToClient;
+    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetClientRect, IsWindowVisible};
 
     if !PET_HOOK_ALLOW.load(Ordering::Relaxed) {
