@@ -644,16 +644,32 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: usize, lparam: isiz
                     });
                 }
                 WM_LBUTTONDOWN => {
+                    // Decide AT BUTTON-DOWN TIME whether this click belongs to
+                    // the pet. Swallowing here is race-free: the LL hook sees
+                    // every event system-wide, so there is no dependency on
+                    // the 25ms polling thread having flipped WS_EX_TRANSPARENT
+                    // beforehand.
+                    if crate::pet_hit_test_at_screen(ms.pt.x, ms.pt.y) {
+                        crate::begin_hook_drag(ms.pt.x, ms.pt.y);
+                        return 1; // swallow: the drag is ours now
+                    }
                     let _ = tx.send(RawHookMsg::MouseDown("left"));
                 }
                 WM_LBUTTONUP => {
-                    let _ = tx.send(RawHookMsg::MouseUp("left"));
-                    #[cfg(windows)]
                     if crate::hook_drag_active() {
                         let _ = tx.send(RawHookMsg::DragEnd);
+                        return 1; // swallow the matching up-event too
                     }
+                    let _ = tx.send(RawHookMsg::MouseUp("left"));
                 }
                 WM_RBUTTONDOWN => {
+                    if crate::pet_hit_test_at_screen(ms.pt.x, ms.pt.y) {
+                        let _ = tx.send(RawHookMsg::ContextMenu {
+                            x: ms.pt.x,
+                            y: ms.pt.y,
+                        });
+                        return 1; // swallow: menu handled via kuro-canvas-context
+                    }
                     let _ = tx.send(RawHookMsg::MouseDown("right"));
                 }
                 WM_RBUTTONUP => {

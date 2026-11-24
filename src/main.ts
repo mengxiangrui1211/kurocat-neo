@@ -548,9 +548,15 @@ async function bootstrap(): Promise<void> {
     openContextMenu(ev.payload.x, ev.payload.y);
   });
 
-  // Left-click drag to reposition transparent window
+  // Left-click drag to reposition transparent window.
+  // On Windows this NEVER runs in practice: the window is permanently
+  // click-through and the WH_MOUSE_LL hook owns the drag (begin_hook_drag).
+  // We also hard-disable tao's startDragging() here — invoked from Tauri's
+  // async command thread it posts WM_NCLBUTTONDOWN cross-thread, which makes
+  // the window teleport erratically (the "sometimes jumps far away" bug).
+  const isWindows = navigator.userAgent.includes('Windows');
   canvas.addEventListener('mousedown', async (e) => {
-    if (e.button === 0) {
+    if (e.button === 0 && !isWindows) {
       closeContextMenu();
       if (settings.clickThroughLocked && !altOverride && !e.altKey) return;
       canvas.classList.add('pet-dragging');
@@ -562,6 +568,8 @@ async function bootstrap(): Promise<void> {
         void invoke('set_dragging', { dragging: false });
         void invoke('save_window_pos');
       }
+    } else if (e.button === 0) {
+      closeContextMenu();
     }
   });
 
