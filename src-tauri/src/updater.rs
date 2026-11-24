@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter};
 
-const REPO_API_LATEST: &str = "https://api.github.com/repos/qianyiai/kurocat/releases/latest";
-const REPO_RELEASES_PAGE: &str = "https://github.com/qianyiai/kurocat/releases/latest";
+const REPO_API_LATEST: &str = "https://api.github.com/repos/mengxiangrui1211/kurocat-neo/releases/latest";
+const REPO_RELEASES_PAGE: &str = "https://github.com/mengxiangrui1211/kurocat-neo/releases/latest";
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -285,7 +285,16 @@ fn fetch_latest_release_json() -> Result<String, String> {
 
 pub fn check_latest_update() -> Result<UpdateInfo, String> {
     let raw_json = fetch_latest_release_json()?;
-    let rel: GhRelease = serde_json::from_str(&raw_json)
+    // The response may carry BOM / proxy-injected garbage / PowerShell console
+    // noise around the JSON payload (serde would fail with "trailing
+    // characters" or "expected value"). Extract the outermost JSON object
+    // before parsing.
+    let json_start = raw_json.find('{').ok_or("响应不是有效的 JSON 数据")?;
+    let json_end = raw_json.rfind('}').ok_or("响应不是有效的 JSON 数据")?;
+    if json_end < json_start {
+        return Err("响应不是有效的 JSON 数据".to_string());
+    }
+    let rel: GhRelease = serde_json::from_str(&raw_json[json_start..=json_end])
         .map_err(|e| format!("解析最新版本信息失败: {}", e))?;
 
     let latest_clean = rel
