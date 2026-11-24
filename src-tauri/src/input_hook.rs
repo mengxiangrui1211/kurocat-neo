@@ -470,6 +470,23 @@ pub fn start_global_hooks(app: AppHandle) {
                 RawHookMsg::MouseWheel(delta) => {
                     let _ = app.emit("kuro-input", InputEvent::MouseWheel { delta });
                 }
+                #[cfg(windows)]
+                RawHookMsg::ContextMenu { x, y } => {
+                    // The webview never sees mouse events (window is
+                    // permanently click-through on Windows), so the context
+                    // menu must be opened from here. Convert the screen
+                    // point to logical client coordinates first.
+                    if let Some(win) = app.get_webview_window("main") {
+                        if let (Ok(pos), Ok(sf)) = (win.outer_position(), win.scale_factor()) {
+                            let cx = (x - pos.x) as f64 / sf;
+                            let cy = (y - pos.y) as f64 / sf;
+                            let _ = app.emit(
+                                "kuro-canvas-context",
+                                serde_json::json!({ "x": cx, "y": cy }),
+                            );
+                        }
+                    }
+                }
                 RawHookMsg::MouseMove { x, y } => {
                     let now = Instant::now();
                     if now.duration_since(last_mouse_emit) >= Duration::from_millis(16) {

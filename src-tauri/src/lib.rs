@@ -48,6 +48,122 @@ pub fn window_dimensions(layout: &str, scale: f64) -> (f64, f64) {
     )
 }
 
+// --- Hook-driven drag (Windows) -------------------------------------------
+// On modern Windows the pet window stays click-through (WS_EX_TRANSPARENT) at
+// ALL times. Instead of racing a 25 ms polling thread to flip the flag before
+// the user clicks (which caused "sometimes drag works, sometimes not" — the
+// OS also caches hit-testing for a stationary cursor), the WH_MOUSE_LL hook
+// decides AT BUTTON-DOWN TIME whether the cursor is over the pet: if so it
+// swallows the click and posts WM_NCLBUTTONDOWN(HTCAPTION) straight to the
+// window, starting a native drag with zero latency and zero races.
+#[cfg(windows)]
+use std::sync::atomic::{AtomicIsize, AtomicU32};
+
+#[cfg(windows)]
+pub static PET_HWND: AtomicIsize = AtomicIsize::new(0);
+#[cfg(windows)]
+static PET_HOOK_ALLOW: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static PET_HOOK_IS108: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static PET_HOOK_SCALE_MILLI: AtomicU32 = AtomicU32::new(1000);
+#[cfg(windows)]
+static PET_HOOK_USER_SCALE_MILLI: AtomicU32 = AtomicU32::new(1000);
+#[cfg(windows)]
+static PET_HOOK_BW_MILLI: AtomicU32 = AtomicU32::new(420_000);
+#[cfg(windows)]
+static PET_HOOK_BH_MILLI: AtomicU32 = AtomicU32::new(440_000);
+#[cfg(windows)]
+static PET_HOOK_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Called from the WH_MOUSE_LL hook at button-down time. Lock-free and
+/// non-blocking: on any doubt it returns false so the click passes through
+/// to the window below as usual.
+#[cfg(windows)]
+pub fn pet_hit_test_at_screen(sx: i32, sy: i32) -> bool {
+    use windows_sys::Win32::Foundation::{POINT, RECT};
+    use windows_sys::Win32::Graphics_Gdi::ScreenToClient;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClientRect, IsWindowVisible};
+
+    if !PET_HOOK_ALLOW.load(Ordering::Relaxed) {
+        return false;
+    }
+    let hwnd_raw = PET_HWND.load(Ordering::Relaxed);
+    if hwnd_raw == 0 {
+        return false;
+    }
+    let hwnd = hwnd_raw as windows_sys::Win32::Foundation::HWND;
+    unsafe {
+        // Authoritative visibility check: never drag/intercept a hidden pet
+        // even if the allow flag is momentarily stale.
+        if IsWindowVisible(hwnd) == 0 {
+            return false;
+        }
+        let mut rc = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if GetClientRect(hwnd, &mut rc) == 0 {
+            return false;
+        }
+        let w = (rc.right - rc.left).max(1) as f64;
+        let h = (rc.bottom - rc.top).max(1) as f64;
+        let mut pt = POINT { x: sx, y: sy };
+        if ScreenToClient(hwnd, &mut pt) == 0 {
+            return false;
+        }
+        let rx = pt.x as f64 / w;
+        let ry = pt.y as f64 / h;
+        if !(0.0..=1.0).contains(&rx) || !(0.0..=1.0).contains(&ry) {
+            return false;
+        }
+        let sf = (PET_HOOK_SCALE_MILLI.load(Ordering::Relaxed) as f64 / 1000.0).max(0.01);
+        let bw = PET_HOOK_BW_MILLI.load(Ordering::Relaxed) as f64 / 1000.0;
+        let bh = PET_HOOK_BH_MILLI.load(Ordering::Relaxed) as f64 / 1000.0;
+        let scale = (PET_HOOK_USER_SCALE_MILLI.load(Ordering::Relaxed) as f64 / 1000.0)
+            .clamp(0.20, 1.50);
+        let win_log_w = w / sf;
+        let win_log_h = h / sf;
+        let pet_w_frac = ((bw * scale) / win_log_w).clamp(0.05, 1.0);
+        let pet_h_frac = ((bh * scale) / win_log_h).clamp(0.05, 1.0);
+        let pet_x0 = 1.0 - pet_w_frac;
+        let pet_y0 = 1.0 - pet_h_frac;
+        let pet_rx = (rx - pet_x0) / pet_w_frac;
+        let pet_ry = (ry - pet_y0) / pet_h_frac;
+        if !(0.0..=1.0).contains(&pet_rx) || !(0.0..=1.0).contains(&pet_ry) {
+            return false;
+        }
+        is_over_interactive_silhouette(pet_rx, pet_ry, PET_HOOK_IS108.load(Ordering::Relaxed)).0
+    }
+}
+
+/// Swallow-then-drag: start a native HTCAPTION modal drag at the cursor the
+/// user pressed on. Called from the mouse hook thread.
+#[cfg(windows)]
+pub fn begin_hook_drag(sx: i32, sy: i32) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        HTCAPTION, PostMessageW, WM_NCLBUTTONDOWN,
+    };
+    let hwnd = PET_HWND.load(Ordering::Relaxed);
+    if hwnd == 0 {
+        return;
+    }
+    PET_HOOK_DRAG_ACTIVE.store(true, Ordering::Relaxed);
+    unsafe {
+        // MAKELPARAM(x, y): low word = x, high word = y (16-bit wrap-around
+        // for negative multi-monitor coordinates).
+        let lparam = (((sy as u16 as usize) << 16) | (sx as u16 as usize)) as isize;
+        PostMessageW(
+            hwnd as windows_sys::Win32::Foundation::HWND,
+            WM_NCLBUTTONDOWN,
+            HTCAPTION as usize,
+            lparam,
+        );
+    }
+}
+
 fn resize_window_anchored_bottom_right(
     win: &tauri::WebviewWindow,
     layout: &str,
@@ -1100,6 +1216,11 @@ fn start_hit_test_loop(
         loop {
             std::thread::sleep(Duration::from_millis(25));
 
+            // Default-deny for the hook-driven drag; re-enabled below on each
+            // tick only when every interactive condition checks out.
+            #[cfg(windows)]
+            PET_HOOK_ALLOW.store(false, Ordering::Relaxed);
+
             if paused_guard.load(Ordering::Relaxed) {
                 continue;
             }
@@ -1118,6 +1239,14 @@ fn start_hit_test_loop(
                 }
             } else if !win.is_visible().unwrap_or(false) {
                 continue;
+            }
+
+            // Publish the pet window handle once for the mouse-hook drag path.
+            #[cfg(windows)]
+            if !is_win7_ulw && PET_HWND.load(Ordering::Relaxed) == 0 {
+                if let Ok(h) = win.hwnd() {
+                    PET_HWND.store(h.0 as isize, Ordering::Relaxed);
+                }
             }
             let sf = win.scale_factor().unwrap_or(1.0);
             let Some((cx, cy)) = get_cursor_pos(sf) else {
@@ -1272,15 +1401,71 @@ fn start_hit_test_loop(
 
             let over_banner = is_banner && inside && ry <= 0.19;
 
+            // Publish a fresh lock-free snapshot for the mouse-hook drag path
+            // and detect the end of a hook-initiated native drag.
+            #[cfg(windows)]
+            if !is_win7_ulw {
+                PET_HOOK_IS108.store(is_108, Ordering::Relaxed);
+                PET_HOOK_SCALE_MILLI
+                    .store((sf * 1000.0).round().max(1.0) as u32, Ordering::Relaxed);
+                PET_HOOK_USER_SCALE_MILLI
+                    .store((cur_scale * 1000.0).round().max(1.0) as u32, Ordering::Relaxed);
+                PET_HOOK_BW_MILLI.store((bw * 1000.0).round() as u32, Ordering::Relaxed);
+                PET_HOOK_BH_MILLI.store((bh * 1000.0).round() as u32, Ordering::Relaxed);
+                PET_HOOK_ALLOW.store(
+                    !is_menu && !is_drag && !over_banner && !effective_locked,
+                    Ordering::Relaxed,
+                );
+                if PET_HOOK_DRAG_ACTIVE.load(Ordering::Relaxed) {
+                    let held = unsafe {
+                        windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(
+                            windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_LBUTTON,
+                        )
+                    } as u16
+                        & 0x8000
+                        != 0;
+                    if !held {
+                        PET_HOOK_DRAG_ACTIVE.store(false, Ordering::Relaxed);
+                        // Persist the final position the way the frontend's
+                        // save_window_pos command would have.
+                        if let Ok(pos) = win.outer_position() {
+                            let mut s = settings.lock().unwrap();
+                            s.x = Some(pos.x);
+                            s.y = Some(pos.y);
+                            save_settings(&s);
+                        }
+                    }
+                }
+            }
+
+            let hook_drag_active = if cfg!(windows) {
+                #[cfg(windows)]
+                {
+                    !is_win7_ulw && PET_HOOK_DRAG_ACTIVE.load(Ordering::Relaxed)
+                }
+                #[cfg(not(windows))]
+                {
+                    false
+                }
+            } else {
+                false
+            };
+
             // On Windows 7/8 ULW mode, UpdateLayeredWindow(ULW_ALPHA) natively passes through all
             // alpha==0 pixels at the OS level, so we ONLY toggle WS_EX_TRANSPARENT on ulw_hwnd when
             // click-through is explicitly locked (`effective_locked`).
-            let should_ignore = if is_menu || is_drag || over_banner {
+            //
+            // On modern Windows the window is kept click-through PERMANENTLY in normal mode;
+            // interactivity is decided by the WH_MOUSE_LL hook at button-down time
+            // (pet_hit_test_at_screen), which is race-free by construction.
+            let should_ignore = if is_menu || is_drag || over_banner || hook_drag_active {
                 false
             } else if effective_locked {
                 true
             } else if is_win7_ulw {
                 false
+            } else if cfg!(windows) {
+                true
             } else {
                 !over_interactive
             };

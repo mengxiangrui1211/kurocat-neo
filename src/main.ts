@@ -541,6 +541,13 @@ async function bootstrap(): Promise<void> {
     canvas.classList.toggle('pet-hover', c.overCat && interactive);
   });
 
+  // Windows: the window is permanently click-through, so the WH_MOUSE_LL hook
+  // intercepts right-clicks on the pet and asks us to open the context menu
+  // at the given logical client coordinates.
+  await listen<{ x: number; y: number }>('kuro-canvas-context', (ev) => {
+    openContextMenu(ev.payload.x, ev.payload.y);
+  });
+
   // Left-click drag to reposition transparent window
   canvas.addEventListener('mousedown', async (e) => {
     if (e.button === 0) {
