@@ -82,7 +82,7 @@ static PET_HOOK_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 pub fn pet_hit_test_at_screen(sx: i32, sy: i32) -> bool {
     use windows_sys::Win32::Foundation::{POINT, RECT};
-    use windows_sys::Win32::Graphics_Gdi::ScreenToClient;
+    use windows_sys::Win32::Gdi::ScreenToClient;
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetClientRect, IsWindowVisible};
 
     if !PET_HOOK_ALLOW.load(Ordering::Relaxed) {
@@ -1419,7 +1419,7 @@ fn start_hit_test_loop(
                 if PET_HOOK_DRAG_ACTIVE.load(Ordering::Relaxed) {
                     let held = unsafe {
                         windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(
-                            windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_LBUTTON,
+                            windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_LBUTTON as i32,
                         )
                     } as u16
                         & 0x8000

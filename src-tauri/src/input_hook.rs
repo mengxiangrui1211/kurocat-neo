@@ -63,6 +63,11 @@ enum RawHookMsg {
         x: i32,
         y: i32,
     },
+    #[cfg(windows)]
+    ContextMenu {
+        x: i32,
+        y: i32,
+    },
 }
 
 static HOOK_TX: OnceLock<mpsc::Sender<RawHookMsg>> = OnceLock::new();
