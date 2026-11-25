@@ -300,6 +300,9 @@ export class KuroCatEngine {
   private lastPetCursorY: number | null = null;
   private petEnergy = 0;
   private squintAmount = 0;
+  // Annoyed-cat tail floor-thump: synced with purr intensity (squintAmount > 0.25)
+  private tailThumpPhase = Math.random() * 0.7;
+  private tailThumpWeight = 0;
   private earTwitchLeft = 0;
   private earTwitchRight = 0;
   private recentKeyTimes: number[] = [];
@@ -724,6 +727,40 @@ export class KuroCatEngine {
     }
   }
 
+  // ---- Tail floor-thump (annoyed-cat tail slap while being petted) ----
+
+  private updateTailThump(dt: number): void {
+    const target = Math.max(0, Math.min(1, (this.squintAmount - 0.25) / 0.2));
+    this.tailThumpWeight += (target - this.tailThumpWeight) * (1 - Math.exp(-8 * dt));
+    if (this.tailThumpWeight > 0.02) {
+      // More petting energy → faster annoyed thumping (real cats speed up when bothered!)
+      const period = 0.82 - 0.38 * this.petEnergy;
+      this.tailThumpPhase = (this.tailThumpPhase + dt / period) % 1;
+    } else {
+      this.tailThumpPhase = 0.9; // parked at cycle end (rest pose)
+    }
+  }
+
+  // 0 = calm raised S-hook … 1 = tip slapped flat on the floor; slight negative = anticipation lift
+  private static tailThumpPose(p: number): number {
+    if (p < 0.22) {
+      return -0.08 * Math.sin((p / 0.22) * Math.PI); // anticipation: tail lifts a bit more
+    }
+    if (p < 0.42) {
+      const t = (p - 0.22) / 0.2;
+      return t * t * (3 - 2 * t); // whip down
+    }
+    if (p < 0.55) {
+      return 1; // impact hold on the floor
+    }
+    if (p < 0.85) {
+      const t = (p - 0.55) / 0.3;
+      return 1 - (t * t * (3 - 2 * t)) * 1.18; // spring back up with overshoot
+    }
+    const t = (p - 0.85) / 0.15;
+    return -0.18 * (1 - t * t * (3 - 2 * t)); // settle back to rest
+  }
+
   // ---- Keyboard projection ----
 
   private projectKeyboardPoint(uCol: number, rowPos: number): Vec2 {
@@ -913,6 +950,7 @@ export class KuroCatEngine {
     const wantPrivacy = this.privacyMode ? 1 : 0;
     this.privacyClose += (wantPrivacy - this.privacyClose) * (1 - Math.exp(-14 * dt));
     catAudio.setPurrIntensity(!this.privacyMode && this.squintAmount > 0.25 ? this.squintAmount : 0);
+    this.updateTailThump(dt);
     if (this.catBreed === 'dafeiyu') {
       this.dafeiyu.update(dt, now, this.buildDaFeiYuLayout());
     }
@@ -1146,10 +1184,13 @@ export class KuroCatEngine {
     const startY = hipRight.y - 2;
     const cp1X = startX + 34;
     const cp1Y = startY + 4 + gentleDrift * 0.25;
+    // Tail floor-thump: while petted/purring, the tip whips down and slaps the floor, then springs back.
+    const thumpW = this.tailThumpWeight;
+    const thumpPose = KuroCatEngine.tailThumpPose(this.tailThumpPhase) * thumpW;
     const cp2X = startX + 38;
-    const cp2Y = startY - 34 + gentleDrift * 0.45;
-    const endX = startX + 70 + gentleDrift * 0.35;
-    const endY = startY - 35 + gentleDrift;
+    const cp2Y = startY - 34 + gentleDrift * 0.45 + thumpPose * 28;
+    const endX = startX + 70 + gentleDrift * 0.35 + thumpPose * 12;
+    const endY = startY - 35 + gentleDrift + thumpPose * 40;
 
     ctx.save();
     ctx.lineCap = 'round';
@@ -1228,6 +1269,7 @@ export class KuroCatEngine {
         }
       }
 
+      this.drawTailThumpFx(ctx, endX, endY, thumpW);
       ctx.restore();
       return;
     }
@@ -1281,6 +1323,34 @@ export class KuroCatEngine {
       ctx.stroke();
     }
 
+    this.drawTailThumpFx(ctx, endX, endY, thumpW);
+    ctx.restore();
+  }
+
+  // Impact shockwave ring + dust puffs right after the tail tip slaps the floor
+  private drawTailThumpFx(ctx: CanvasRenderingContext2D, endX: number, endY: number, w: number): void {
+    const p = this.tailThumpPhase;
+    if (w < 0.25 || p < 0.4 || p > 0.72) {
+      return;
+    }
+    const t = (p - 0.4) / 0.32; // 0 → 1 expanding after contact
+    const alpha = (1 - t) * 0.32 * w;
+    const floorY = endY + 8; // contact line under the slapping tip
+
+    ctx.save();
+    // expanding impact ring
+    ctx.strokeStyle = `rgba(150, 148, 155, ${alpha.toFixed(3)})`;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.ellipse(endX, floorY, 5 + t * 16, (5 + t * 16) * 0.32, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    // dust puffs kicked sideways
+    ctx.fillStyle = `rgba(160, 158, 163, ${(alpha * 0.75).toFixed(3)})`;
+    for (const [dx, dy, r] of [[-10, -2, 3.2], [2, -4, 4.0], [12, -1, 2.8]] as const) {
+      ctx.beginPath();
+      ctx.ellipse(endX + dx * (0.5 + t), floorY + dy, r * (1 + t * 0.7), r * 0.62, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
   }
 
