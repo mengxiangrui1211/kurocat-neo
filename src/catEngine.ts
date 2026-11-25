@@ -1327,30 +1327,68 @@ export class KuroCatEngine {
     ctx.restore();
   }
 
-  // Impact shockwave ring + dust puffs right after the tail tip slaps the floor
+  // Comic black-white starburst at the contact point — sized to the real tail
+  // thickness (star diameter ≈ 3x tail stroke width) so it never looks overblown.
   private drawTailThumpFx(ctx: CanvasRenderingContext2D, endX: number, endY: number, w: number): void {
     const p = this.tailThumpPhase;
     if (w < 0.25 || p < 0.4 || p > 0.72) {
       return;
     }
-    const t = (p - 0.4) / 0.32; // 0 → 1 expanding after contact
-    const alpha = (1 - t) * 0.32 * w;
-    const floorY = endY + 8; // contact line under the slapping tip
+    const t = (p - 0.4) / 0.32; // 0 → 1 across the impact window
+
+    // proportionate sizing: follows the actual coat-specific tail width
+    const tailW = this.customSkin
+      ? (this.customSkin.tailFluffy ? 20 : 16)
+      : (this.catBreed === 'ragdoll' ? 20.2 : 16);
+    const R = tailW * 1.5 * (1 + 0.2 * this.petEnergy); // pop slightly bigger when petted hard
+
+    // pop-in with overshoot, settle, fade out
+    let scale: number;
+    if (t < 0.18) {
+      scale = 0.3 + (1.12 - 0.3) * (t / 0.18);
+    } else if (t < 0.45) {
+      scale = 1.12 - 0.14 * ((t - 0.18) / 0.27);
+    } else {
+      scale = 0.98;
+    }
+    const alpha = w * (t < 0.6 ? 1 : 1 - (t - 0.6) / 0.4);
+    const jitter = t < 0.5 ? Math.sin(t * 34) * 0.045 : 0; // tiny comic shake right after impact
 
     ctx.save();
-    // expanding impact ring
-    ctx.strokeStyle = `rgba(150, 148, 155, ${alpha.toFixed(3)})`;
-    ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    ctx.ellipse(endX, floorY, 5 + t * 16, (5 + t * 16) * 0.32, 0, 0, Math.PI * 2);
-    ctx.stroke();
-    // dust puffs kicked sideways
-    ctx.fillStyle = `rgba(160, 158, 163, ${(alpha * 0.75).toFixed(3)})`;
-    for (const [dx, dy, r] of [[-10, -2, 3.2], [2, -4, 4.0], [12, -1, 2.8]] as const) {
+    ctx.translate(endX, endY + tailW * 0.5); // contact line under the slapping tip
+    ctx.rotate(-0.18 + jitter);
+    ctx.scale(scale, scale);
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+
+    const spikes = 8;
+    const drawStar = (r: number, ir: number): void => {
       ctx.beginPath();
-      ctx.ellipse(endX + dx * (0.5 + t), floorY + dy, r * (1 + t * 0.7), r * 0.62, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
+      for (let k = 0; k < spikes * 2; k++) {
+        const rad = k % 2 === 0 ? r : ir;
+        const a = (k / (spikes * 2)) * Math.PI * 2 - Math.PI / 2;
+        const x = Math.cos(a) * rad;
+        const y = Math.sin(a) * rad;
+        if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+    };
+
+    // black backing star (thick comic outline layer)
+    ctx.fillStyle = '#0d0d0d';
+    drawStar(R * 1.15, R * 0.52);
+    ctx.fill();
+    // white main star with crisp black edge
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#0d0d0d';
+    ctx.lineWidth = Math.max(2, tailW * 0.18);
+    drawStar(R, R * 0.45);
+    ctx.fill();
+    ctx.stroke();
+    // small black accent star inside
+    ctx.fillStyle = '#0d0d0d';
+    drawStar(R * 0.4, R * 0.18);
+    ctx.fill();
+
     ctx.restore();
   }
 
